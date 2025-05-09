@@ -19,6 +19,15 @@ import json
 import re
 import random
 
+from PIL import Image
+import torch
+import torchvision.transforms as T
+from torch.utils.data import Dataset
+
+from liv.gcr_buffer import GCRNegBuffer
+
+
+
 def tryint(s):
     try:
         return int(s)
@@ -153,6 +162,92 @@ class LIVBuffer(IterableDataset):
     def __iter__(self):
         while True:
             yield self._sample()
+
+
+class GCROfflineBuffer(IterableDataset):
+    """
+    Successful demos → batches for VIP + GCR.
+    Failed demos     → static negative buffer.
+    """
+    def __init__(self, datapath, beta=1.0, doaug="rctraj", **_):
+        self.datapath   = Path(datapath)
+        self.datasource = "gcr_offline"   # reused by get_ind
+        self.doaug      = doaug
+
+        # ---------- transforms ----------
+        self.preprocess = T.Compose([
+            T.Resize(256, antialias=None),
+            T.CenterCrop(224),
+            T.ToTensor(),
+        ])
+        if doaug == "rctraj":
+            self.aug = torch.nn.Sequential(
+                T.RandomResizedCrop(224, scale=(0.2, 1.0), antialias=None)
+            )
+        else:
+            self.aug = lambda x: x
+
+        # ---------- manifests ----------
+        self.manifest_s = pd.read_csv(self.datapath / "manifest_success.csv")
+        fails           = pd.read_csv(self.datapath / "manifest_failure.csv")
+
+        # ---------- negative buffer ----------
+        self.neg_buf = GCRNegBuffer(maxlen=50_000)
+        for _, row in fails.iterrows():
+            vid, nf = row.directory, row.num_frames
+            for i in range(int(beta * nf)):          # beta=1.0 → all frames
+                img = self._load_frame(vid, i)
+                self.neg_buf.buf.append(self.preprocess(img))
+
+    # ---------- core sampling logic ----------
+    def _sample(self):
+        vidid   = np.random.randint(0, len(self.manifest_s))
+        m       = self.manifest_s.iloc[vidid]
+        vidlen  = m["num_frames"]
+        text    = m["text"]
+        vid     = m["directory"]
+
+        # choose frame indices (same policy as LIVBuffer offline branch)
+        start_ind = 0
+        end_ind   = vidlen - 1
+        end_text_ind = end_ind
+        s0_ind    = np.random.randint(start_ind, end_ind)
+        s1_ind    = min(s0_ind + 1, end_ind)
+
+        reward = float(s0_ind == end_ind) - 1  # always –1
+
+        # ---------- load & augment frames ----------
+        def grab(i):  # helper
+            return get_ind(vid, i, self.datasource) / 255.0
+
+        if self.doaug == "rctraj":
+            im0, img, imts0, imts1, img_text = [
+                grab(j) for j in (start_ind, end_ind, s0_ind, s1_ind, end_text_ind)
+            ]
+            allims      = torch.stack([im0, img, imts0, imts1, img_text], 0)
+            allims_aug  = self.aug(allims)
+            im0, img, imts0, imts1, img_text = allims_aug
+        else:
+            im0      = self.aug(grab(start_ind))
+            img      = self.aug(grab(end_ind))
+            imts0    = self.aug(grab(s0_ind))
+            imts1    = self.aug(grab(s1_ind))
+            img_text = self.aug(grab(end_text_ind))
+
+        im = torch.stack([im0, img, imts0, imts1, img_text])
+        return (im, reward, text)
+    
+    # ---------- iterable API ----------
+    def __iter__(self):
+        while True:
+            yield self._sample()
+
+    # ---------- helpers ----------
+    def _load_frame(self, vid_folder, idx):
+        fp = f"{vid_folder}/{idx}.png"
+        if os.path.exists(fp):
+            return Image.open(fp)
+        raise FileNotFoundError(fp)
 
 if __name__ == "__main__":
     # You can test your dataset here by replacing the dummy datapath 

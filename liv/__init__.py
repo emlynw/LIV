@@ -45,8 +45,9 @@ def load_liv(modelid='resnet50'):
     modelcfg = omegaconf.OmegaConf.load(configpath)
     cleancfg = cleanup_config(modelcfg)
     rep = hydra.utils.instantiate(cleancfg)
-    rep = torch.nn.DataParallel(rep)
+    if torch.cuda.device_count() > 1:
+        rep = torch.nn.DataParallel(rep)
     state_dict = torch.load(modelpath, map_location=torch.device(device))['liv']
-    rep.load_state_dict(state_dict)
+    rep.load_state_dict(state_dict, strict=False)
     return rep    
 

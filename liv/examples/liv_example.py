@@ -6,25 +6,51 @@ import torch
 import torchvision.transforms as T
 from PIL import Image 
 from liv import load_liv
+import cv2
 
 model = load_liv()
 model.eval()
-transform = T.Compose([T.ToTensor()])
 
-task = "open microwave"
+total_params = sum(p.numel() for p in model.module.model.visual.parameters())
+print(f"Total parameters: {total_params:,}")
+transform = T.Compose([T.ToTensor()])
+# dummy image to get the input size
+dummy_image = cv2.imread("/home/emlyn/datasets/strawb_sim/success/valid/robot/2/0.png")
+dummy_image = cv2.cvtColor(dummy_image, cv2.COLOR_BGR2RGB)
+dummy_image = cv2.resize(dummy_image, (224, 224))
+dummy_image = Image.fromarray(dummy_image)
+dummy_image = transform(dummy_image)
+dummy_image = dummy_image.unsqueeze(0)
+dummy_emb = model(input=dummy_image.cuda(), modality="vision")
+
+# dummy_image = Image.open("/home/emlyn/datasets/strawb_sim/success/valid/robot/2/0.png")
+# dummy_image = transform(dummy_image)    
+# dummy_image = dummy_image.unsqueeze(0)
+# dummy_emb = model(input=dummy_image.cuda(), modality="vision")
+print(f"Input shape: {dummy_image.shape}")
+print(f"Embedding shape: {dummy_emb.shape}")
+
+
+task = "pick red strawberry"
+
+filename = "strawb_success"
+
+goal_image = Image.open("/home/emlyn/datasets/strawb_sim/success/valid/robot/9/113.png")
+goal_image = transform(goal_image)
+goal_image = goal_image.unsqueeze(0)
+goal_embedding_img = model(input=goal_image.cuda(), modality="vision")
 
 imgs = []
 imgs_tensor = []
-start_frame = 33545
-end_frame = 33601
+start_frame = 0
+end_frame = 150
 for index in range(start_frame, end_frame):
-    img = Image.open(f"sample_video/frame_0000{index+1:06}.jpg")
+    img = Image.open(f"/home/emlyn/datasets/strawb_sim/success/valid/robot/2/{index}.png")
     imgs.append(img)
     imgs_tensor.append(transform(img))
 imgs_tensor = torch.stack(imgs_tensor)
 with torch.no_grad():
     embeddings = model(input=imgs_tensor.cuda(), modality="vision")
-    goal_embedding_img = embeddings[-1]
     token = clip.tokenize([task])
     goal_embedding_text = model(input=token, modality="text")
     goal_embedding_text = goal_embedding_text[0] 
@@ -61,7 +87,7 @@ asp = 1
 ax[0].set_aspect(asp * np.diff(ax[0].get_xlim())[0] / np.diff(ax[0].get_ylim())[0])
 ax[1].set_aspect(asp * np.diff(ax[1].get_xlim())[0] / np.diff(ax[1].get_ylim())[0])
 ax[2].set_aspect(asp * np.diff(ax[2].get_xlim())[0] / np.diff(ax[2].get_ylim())[0])
-fig.savefig(f"liv_open_microwave.png", bbox_inches='tight')
+fig.savefig(f"{filename}.png", bbox_inches='tight')
 plt.close()
 
 ax0_xlim = ax[0].get_xlim()
@@ -102,4 +128,4 @@ def animate(i):
 
 # Generate animated reward curve
 ani = FuncAnimation(fig, animate, interval=20, repeat=False, frames=len(distances_cur_img)+30)    
-ani.save(f"liv_open_microwave.gif", dpi=100, writer=PillowWriter(fps=25))
+ani.save(f"{filename}.gif", dpi=100, writer=PillowWriter(fps=25))

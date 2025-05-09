@@ -1,0 +1,8 @@
+# @package _global_
+dataset: strawb_sim_gcr
+datapath_train:  /home/emlyn/datasets/strawb_sim_gcr/train/
+
+wandbproject: gcr_strawb_sim
+hydra:
+    job:
+        name: 'gcr_strawb_sim'

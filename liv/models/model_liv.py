@@ -17,7 +17,7 @@ class LIV(nn.Module):
                        lr=1e-5, weight_decay=0.001,
                        visionweight=1.0, langweight=1.0, clipweight=1.0,
                        gamma=0.98, metric="cos", num_negatives=0,
-                       grad_text=True, scratch=False):
+                       grad_text=False, scratch=False):
         super().__init__()
 
         self.modelid = modelid
@@ -33,6 +33,16 @@ class LIV(nn.Module):
 
         # Load CLIP model and transform
         model, cliptransforms = clip.load(modelid, device=self.device, scratch=scratch, jit=False)
+
+        if not grad_text:
+            # keep only the vision backbone + projection
+            model.transformer = None          # free 40 M params
+            model.token_embedding = None
+            model.text_projection = None
+            model.positional_embedding = None
+            model.ln_final = None
+            model.logit_scale = nn.Parameter(torch.ones(()))  # dummy to satisfy state_dict
+            torch.cuda.empty_cache()          #
         
         # CLIP precision
         if device == "cpu":
