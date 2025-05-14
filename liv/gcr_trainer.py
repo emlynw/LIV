@@ -17,52 +17,50 @@ class GCRTrainer(Trainer):
 
     # ---------- one‑pass update ----------
     def update(self, model, batch, step, eval=False):
-        metrics = {}
-        if eval:
-            model.eval()
-        else:
-            model.train()
+        # -------------------------------------------------
+        # 1) pick the right handle once for this call
+        mref = model.module if isinstance(model, torch.nn.DataParallel) else model
+        # -------------------------------------------------
 
-        # === unpack and encode exactly as in Trainer.update ===
-        b_im, b_reward, b_lang = batch
+        metrics = {}
+        model.train() if not eval else model.eval()
+
+        b_im, b_reward, _ = batch
         b_im = b_im.cuda()
         bs, stack, _, H, W = b_im.shape
         enc = model(b_im.reshape(bs*stack, 3, H, W), modality="vision")
         enc = enc.view(bs, stack, -1)
 
-        e0, eg = enc[:,0], enc[:,1]          # initial & goal
-        es0, es1 = enc[:,2], enc[:,3]        # (o_t , o_{t+1})
+        e0, eg       = enc[:, 0], enc[:, 1]
+        es0, es1     = enc[:, 2], enc[:, 3]
 
-        # -------- VIP loss (unchanged) --------
-        vip_loss = self.compute_vip_loss(model, e0, es0, es1, eg,
-                                         b_reward, model.module.num_negatives)
-        metrics['vip_loss'] = vip_loss.item()
+        # ---------- VIP loss ----------
+        vip_loss = self.compute_vip_loss(
+            model, e0, es0, es1, eg, b_reward, mref.num_negatives
+        )
+        metrics["vip_loss"] = vip_loss.item()
 
-        # -------- GCR contrastive loss --------
-        # positive goal pair (eg, eg′)
-        pos_idx = torch.randint(1, stack-1, (1,))
-        eg_p = enc[:, pos_idx[0]]
-
-        # negative goals sampled online
+        # ---------- GCR loss ----------
+        pos_idx   = torch.randint(1, stack - 1, (1,))
+        eg_p      = enc[:, pos_idx[0]]
         if len(self.neg_buf) > 0:
             g_neg_imgs = torch.stack(self.neg_buf.sample(bs)).cuda()
-            e_gneg = model(g_neg_imgs, modality="vision")
-        else:                                 # warm‑up
+            e_gneg     = model(g_neg_imgs, modality="vision")
+        else:
             e_gneg = eg.detach()
 
-        sim_pos = model.module.sim(eg, eg_p)
-        sim_neg = model.module.sim(eg, e_gneg)
+        sim_pos  = mref.sim(eg, eg_p)
+        sim_neg  = mref.sim(eg, e_gneg)
         gcr_loss = self._contrastive_loss(sim_pos, sim_neg)
-        metrics['gcr_loss'] = gcr_loss.item()
+        metrics["gcr_loss"] = gcr_loss.item()
 
-        # -------- total loss & single optimizer step --------
-        full_loss = (model.module.visionweight * vip_loss
-                     + model.module.visionweight * gcr_loss)
-        metrics['full_loss'] = full_loss.item()
+        # ---------- total & back-prop ----------
+        full_loss = mref.visionweight * (vip_loss + gcr_loss)
+        metrics["full_loss"] = full_loss.item()
 
         if not eval:
-            model.module.encoder_opt.zero_grad()
+            mref.encoder_opt.zero_grad()
             full_loss.backward()
-            model.module.encoder_opt.step()
+            mref.encoder_opt.step()
 
         return metrics, None

@@ -48,5 +48,5 @@ trainer:
 data:
   _target_: liv.utils.data_loaders.GCROfflineBuffer
   root: ${hydra:runtime.cwd}/my_dataset    # where your success/ & failure/ live
-  batch_size: 4
+  batch_size: 64
   beta: 1.0            # keep *all* failure frames

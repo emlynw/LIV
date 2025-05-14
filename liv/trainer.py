@@ -31,40 +31,49 @@ class Trainer():
         return clip_loss 
 
     def compute_vip_loss(self, model, e0, es0_vip, es1_vip, eg, b_reward, num_negatives=0):
-        r =  b_reward.to(e0.device)
+        mref = model.module if isinstance(model, torch.nn.DataParallel) else model
 
-        V_0 = model.module.sim(e0, eg)
-        V_s = model.module.sim(es0_vip, eg)
-        V_s_next = model.module.sim(es1_vip, eg)
+        r = b_reward.to(e0.device)
 
-        # Rescale Value 
-        V_0 = V_0 / (1-model.module.gamma)
-        V_s = V_s / (1-model.module.gamma)
-        V_s_next = V_s_next / (1-model.module.gamma)
+        V_0      = mref.sim(e0,         eg)
+        V_s      = mref.sim(es0_vip,    eg)
+        V_s_next = mref.sim(es1_vip,    eg)
 
-        # Compute VIP Loss
-        V_loss = (1-model.module.gamma) * -V_0.mean() + torch.log(epsilon + torch.mean(torch.exp(-(r + model.module.gamma * V_s_next - V_s))))
+        # Rescale value estimates
+        scale = 1.0 - mref.gamma
+        V_0      = V_0      / scale
+        V_s      = V_s      / scale
+        V_s_next = V_s_next / scale
 
-        # Optionally, add additional "negative" observations
+        epsilon = 1e-8  # to match the original implementation
+        V_loss = scale * -V_0.mean() + torch.log(
+            epsilon + torch.mean(torch.exp(-(r + mref.gamma * V_s_next - V_s)))
+        )
+
+        # ----- optional negatives ------------------------------------------------
         if num_negatives > 0:
-            V_s_neg = []
+            V_s_neg      = []
             V_s_next_neg = []
             for _ in range(num_negatives):
-                perm = torch.randperm(es0_vip.size()[0])
-                es0_vip_shuf = es0_vip[perm]
-                es1_vip_shuf = es1_vip[perm]
+                perm = torch.randperm(es0_vip.size(0), device=e0.device)
+                V_s_neg.append(     mref.sim(es0_vip[perm], eg))
+                V_s_next_neg.append(mref.sim(es1_vip[perm], eg))
 
-                V_s_neg.append(model.module.sim(es0_vip_shuf, eg))
-                V_s_next_neg.append(model.module.sim(es1_vip_shuf, eg))
-
-            V_s_neg = torch.cat(V_s_neg)
+            V_s_neg      = torch.cat(V_s_neg)
             V_s_next_neg = torch.cat(V_s_next_neg)
-            r_neg = -torch.ones(V_s_neg.shape).to(V_0.device)
-            V_s_neg = V_s_neg / (1-model.module.gamma)
-            V_s_next_neg = V_s_next_neg / (1-model.module.gamma)                
-            V_loss = V_loss + torch.log(epsilon + torch.mean(torch.exp(-(r_neg + model.module.gamma * V_s_next_neg - V_s_neg))))
-        
-        return V_loss 
+            r_neg        = -torch.ones_like(V_s_neg)
+
+            V_s_neg      = V_s_neg      / scale
+            V_s_next_neg = V_s_next_neg / scale
+
+            V_loss = V_loss + torch.log(
+                epsilon + torch.mean(
+                    torch.exp(-(r_neg + mref.gamma * V_s_next_neg - V_s_neg))
+                )
+            )
+
+        return V_loss
+
 
     def update(self, model, batch, step, eval=False):
         t0 = time.time()
